@@ -1,0 +1,15 @@
+/target/
+
+*.exe
+*.dll
+*.so
+*.dylib
+*.log
+*.tmp
+*.swp
+*.bak
+*.old
+.vscode/
+.idea/
+/doc/
+Cargo.lock
