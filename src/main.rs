@@ -10,13 +10,22 @@ use std::{
 
 use windows::{
     Win32::UI::WindowsAndMessaging::{
-        GetForegroundWindow, GetWindowTextW, GetWindowThreadProcessId,
+        GetForegroundWindow, GetWindowThreadProcessId,
         WindowFromPoint, GetCursorPos,
     },
     Win32::System::Threading::{OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_VM_READ},
     Win32::System::ProcessStatus::K32GetModuleBaseNameW,
     Win32::Foundation::{HWND, POINT, CloseHandle},
 };
+
+use serde::{Deserialize, Serialize};
+
+#[derive(Serialize, Deserialize, Default)]
+struct ConfigData {
+    folder_map: HashMap<PathBuf, bool>,
+    target_exe_name: Option<String>,
+    current_index: usize,
+}
 
 struct ImageViewerApp {
     image_paths: Vec<PathBuf>,
@@ -47,13 +56,25 @@ impl ImageViewerApp {
 
             let mut buffer = [0u16; 260];
             let len = K32GetModuleBaseNameW(handle, None, &mut buffer);
-            CloseHandle(handle);
+            let _ = CloseHandle(handle);
 
             if len == 0 {
                 return None;
             }
 
             Some(String::from_utf16_lossy(&buffer[..len as usize]).to_lowercase())
+        }
+    }
+
+    fn save_config(&self) {
+        let config = ConfigData {
+            folder_map: self.folder_map.clone(),
+            target_exe_name: self.target_exe_name.clone(),
+            current_index: self.current_index,
+        };
+
+        if let Ok(json) = serde_json::to_string_pretty(&config) {
+            let _ = std::fs::write("viewer_config.json", json);
         }
     }
 
@@ -85,6 +106,7 @@ impl ImageViewerApp {
         if !self.image_paths.is_empty() {
             self.current_index = (self.current_index + 1) % self.image_paths.len();
             self.load_image(ctx);
+            self.save_config();
         }
     }
 
@@ -103,6 +125,7 @@ impl ImageViewerApp {
         }
 
         self.current_index = 0;
+        self.save_config();
     }
 }
 
@@ -138,7 +161,7 @@ impl App for ImageViewerApp {
                 .map_or(false, |name| name == *target_name);
 
             let mut pt = POINT::default();
-            unsafe { GetCursorPos(&mut pt) };
+            let _ = unsafe { GetCursorPos(&mut pt) };
             let hovered_hwnd = unsafe { WindowFromPoint(pt) };
             self.target_is_hovered = Self::get_exe_name_from_hwnd(hovered_hwnd)
                 .map_or(false, |name| name == *target_name);
@@ -163,6 +186,7 @@ impl App for ImageViewerApp {
                             if let Some(new_folder) = FileDialog::new().set_title("Add Folder").pick_folder() {
                                 self.folder_map.insert(new_folder.clone(), true);
                                 self.image_paths.extend(get_image_paths(&new_folder));
+                                self.save_config();
                             }
                         }
 
@@ -171,6 +195,7 @@ impl App for ImageViewerApp {
                             if let Some(path) = FileDialog::new().add_filter("EXE", &["exe"]).pick_file() {
                                 if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
                                     self.target_exe_name = Some(name.to_lowercase());
+                                    self.save_config();
                                 }
                             }
                         }
@@ -271,16 +296,32 @@ fn main() {
     use rand::seq::SliceRandom;
     use rand::thread_rng;
 
-    let folder = FileDialog::new()
-        .set_title("Select an image folder")
-        .pick_folder()
-        .expect("No folder selected");
+    let mut folder_map = HashMap::new();
+    let mut target_exe_name = None;
+    let mut current_index = 0;
+
+    if let Ok(data) = std::fs::read_to_string("viewer_config.json") {
+        if let Ok(config) = serde_json::from_str::<ConfigData>(&data) {
+            folder_map = config.folder_map;
+            target_exe_name = config.target_exe_name;
+            current_index = config.current_index;
+        }
+    }
+
+    let folder = if folder_map.is_empty() {
+        let folder = FileDialog::new()
+            .set_title("Select an image folder")
+            .pick_folder()
+            .expect("No folder selected");
+
+        folder_map.insert(folder.clone(), true);
+        folder
+    } else {
+        folder_map.keys().next().unwrap().clone()
+    };
 
     let mut image_paths = get_image_paths(&folder);
     image_paths.shuffle(&mut thread_rng());
-
-    let mut folder_map = HashMap::new();
-    folder_map.insert(folder.clone(), true);
 
     let native_options = eframe::NativeOptions {
         initial_window_size: Some(egui::Vec2::new(800.0, 600.0)),
@@ -288,13 +329,13 @@ fn main() {
         ..Default::default()
     };
 
-    eframe::run_native(
+    let _ = eframe::run_native(
         "Germi Board",
         native_options,
         Box::new(move |_cc| {
             Box::new(ImageViewerApp {
                 image_paths,
-                current_index: 0,
+                current_index,
                 current_image: None,
                 texture: None,
                 last_size: None,
@@ -304,7 +345,7 @@ fn main() {
                 show_folder_manager: false,
                 show_context_menu: false,
                 context_menu_pos: egui::pos2(100.0, 100.0),
-                target_exe_name: None,
+                target_exe_name,
                 target_is_active: false,
                 target_is_hovered: false,
             })
