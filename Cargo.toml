@@ -9,5 +9,5 @@ pixels = "0.13"
 image = "0.25"
 rand = "0.8"
 rfd = "0.13"
-eframe = "0.27"
+eframe = "0.22"
 

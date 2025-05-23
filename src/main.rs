@@ -1,5 +1,5 @@
-use eframe::{egui, egui::ViewportBuilder};
-use image::{DynamicImage, GenericImageView};
+use eframe::{egui, App};
+use image::DynamicImage;
 use rfd::FileDialog;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -8,7 +8,8 @@ struct ImageViewerApp {
     image_paths: Vec<PathBuf>,
     current_index: usize,
     current_image: Option<DynamicImage>,
-    texture: Option<egui::TextureHandle>, 
+    texture: Option<egui::TextureHandle>,
+    last_size: Option<egui::Vec2>,
 }
 
 impl ImageViewerApp {
@@ -20,6 +21,7 @@ impl ImageViewerApp {
                 let color_image = egui::ColorImage::from_rgba_unmultiplied(size, rgba.as_raw());
                 self.texture = Some(ctx.load_texture("image", color_image, Default::default()));
                 self.current_image = Some(img);
+                self.last_size = None;
             }
         }
     }
@@ -32,8 +34,8 @@ impl ImageViewerApp {
     }
 }
 
-impl eframe::App for ImageViewerApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+impl App for ImageViewerApp {
+    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         egui::CentralPanel::default().show(ctx, |ui| {
             if ui.button("Next Image").clicked() {
                 self.next_image(ctx);
@@ -53,14 +55,19 @@ impl eframe::App for ImageViewerApp {
                     target_width = target_height * aspect_ratio;
                 }
 
-                let target_size = egui::Vec2::new(target_width, target_height);
+                let target_size = egui::Vec2::new(target_width.max(300.0), target_height.max(200.0));
+
+                if self.last_size.map_or(true, |s| (s - target_size).length_sq() > 1.0) {
+                    frame.set_window_size(target_size + egui::vec2(16.0, 56.0));
+                    self.last_size = Some(target_size);
+                }
 
                 if let Some(texture) = &self.texture {
                     ui.allocate_ui_with_layout(
                         ui.available_size(),
                         egui::Layout::centered_and_justified(egui::Direction::TopDown),
                         |ui| {
-                            ui.image((texture.id(), target_size));
+                            ui.image(texture.id(), target_size);
                         },
                     );
                 }
@@ -68,8 +75,6 @@ impl eframe::App for ImageViewerApp {
         });
     }
 }
-
-
 
 fn get_image_paths(folder: &Path) -> Vec<PathBuf> {
     fs::read_dir(folder)
@@ -97,25 +102,22 @@ fn main() {
     let image_paths = get_image_paths(&folder);
 
     let native_options = eframe::NativeOptions {
-        viewport: ViewportBuilder::default()
-            .with_inner_size(egui::Vec2::new(800.0, 600.0))
-            .with_resizable(true),
+        initial_window_size: Some(egui::Vec2::new(800.0, 600.0)),
+        resizable: true,
         ..Default::default()
     };
 
     eframe::run_native(
         "Rust Image Viewer",
         native_options,
-        Box::new(move |ctx| {
-            let mut app = ImageViewerApp {
+        Box::new(move |_cc| {
+            Box::new(ImageViewerApp {
                 image_paths,
                 current_index: 0,
                 current_image: None,
                 texture: None,
-            };
-            app.load_image(&ctx.egui_ctx);
-            Box::new(app)
+                last_size: None,
+            })
         }),
     );
 }
-
