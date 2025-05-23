@@ -1,8 +1,12 @@
 use eframe::{egui, App};
 use image::DynamicImage;
 use rfd::FileDialog;
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::{
+    collections::{HashMap, HashSet},
+    fs,
+    path::{Path, PathBuf},
+    time::{Duration, Instant},
+};
 
 struct ImageViewerApp {
     image_paths: Vec<PathBuf>,
@@ -10,18 +14,35 @@ struct ImageViewerApp {
     current_image: Option<DynamicImage>,
     texture: Option<egui::TextureHandle>,
     last_size: Option<egui::Vec2>,
+    last_hover: Instant,
+    decorations_visible: bool,
+    folder_map: HashMap<PathBuf, bool>,
+    show_folder_manager: bool,
+    show_context_menu: bool,
+    context_menu_pos: egui::Pos2,
 }
 
 impl ImageViewerApp {
     fn load_image(&mut self, ctx: &egui::Context) {
-        if let Some(path) = self.image_paths.get(self.current_index) {
-            if let Ok(img) = image::open(path) {
-                let rgba = img.to_rgba8();
-                let size = [img.width() as usize, img.height() as usize];
-                let color_image = egui::ColorImage::from_rgba_unmultiplied(size, rgba.as_raw());
-                self.texture = Some(ctx.load_texture("image", color_image, Default::default()));
-                self.current_image = Some(img);
-                self.last_size = None;
+        while let Some(path) = self.image_paths.get(self.current_index) {
+            match image::open(path) {
+                Ok(img) => {
+                    let rgba = img.to_rgba8();
+                    let size = [img.width() as usize, img.height() as usize];
+                    let color_image = egui::ColorImage::from_rgba_unmultiplied(size, rgba.as_raw());
+                    self.texture = Some(ctx.load_texture("image", color_image, Default::default()));
+                    self.current_image = Some(img);
+                    self.last_size = None;
+                    break;
+                }
+                Err(_) => {
+                    self.image_paths.remove(self.current_index);
+                    if self.current_index >= self.image_paths.len() && !self.image_paths.is_empty() {
+                        self.current_index = 0;
+                    } else {
+                        break;
+                    }
+                }
             }
         }
     }
@@ -32,13 +53,88 @@ impl ImageViewerApp {
             self.load_image(ctx);
         }
     }
+
+    fn refresh_image_list(&mut self) {
+        let mut seen = HashSet::new();
+        self.image_paths.clear();
+
+        for (folder, enabled) in &self.folder_map {
+            if *enabled {
+                for path in get_image_paths(folder) {
+                    if seen.insert(path.clone()) {
+                        self.image_paths.push(path);
+                    }
+                }
+            }
+        }
+
+        self.current_index = 0;
+    }
 }
 
 impl App for ImageViewerApp {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        let pointer_over = ctx.input(|i| i.pointer.hover_pos().is_some());
+
+        if pointer_over {
+            self.last_hover = Instant::now();
+            if !self.decorations_visible {
+                frame.set_decorations(true);
+                self.decorations_visible = true;
+            }
+        } else if self.decorations_visible && self.last_hover.elapsed() > Duration::from_secs(2) {
+            frame.set_decorations(false);
+            self.decorations_visible = false;
+        }
+
+        // Keyboard shortcut for next image
+        if ctx.input(|i| i.key_pressed(egui::Key::ArrowRight)) {
+            self.next_image(ctx);
+        }
+
+        // Right-click detection
+        if ctx.input(|i| i.pointer.secondary_clicked()) {
+            if let Some(pos) = ctx.input(|i| i.pointer.hover_pos()) {
+                self.context_menu_pos = pos;
+                self.show_context_menu = true;
+            }
+        }
+
+        // Right-click context menu
+        if self.show_context_menu {
+            egui::Area::new("right_click_menu")
+                .fixed_pos(self.context_menu_pos)
+                .show(ctx, |ui| {
+                    egui::Frame::popup(ui.style()).show(ui, |ui| {
+                        if ui.button("Next Image").clicked() {
+                                        self.next_image(ctx);
+                        }
+
+                        if ui.button("Folder Manager").clicked() {
+                            self.show_folder_manager = true;
+                            self.show_context_menu = false;
+                        }
+
+                        if ui.button("Add Folder").clicked() {
+                            self.show_context_menu = false;
+                            if let Some(new_folder) = FileDialog::new().set_title("Add Folder").pick_folder() {
+                                self.folder_map.insert(new_folder.clone(), true);
+                                self.image_paths.extend(get_image_paths(&new_folder));
+                            }
+                        }
+
+                        if ui.button("Close Menu").clicked() {
+                            self.show_context_menu = false;
+                        }
+                    });
+                });
+        }
+
+        // Main panel
         egui::CentralPanel::default().show(ctx, |ui| {
-            if ui.button("Next Image").clicked() {
-                self.next_image(ctx);
+
+            if self.current_image.is_none() && self.image_paths.is_empty() {
+                ui.label("No image to display. Right-click to add folders.");
             }
 
             if let Some(img) = &self.current_image {
@@ -73,6 +169,31 @@ impl App for ImageViewerApp {
                 }
             }
         });
+
+        // Folder Manager Popup
+        let mut apply_changes = false;
+
+        if self.show_folder_manager {
+            egui::Window::new("Folder Manager")
+                .open(&mut self.show_folder_manager)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .collapsible(false)
+                .resizable(true)
+                .show(ctx, |ui| {
+                    for (folder, enabled) in &mut self.folder_map {
+                        ui.checkbox(enabled, &format!("{}", folder.display()));
+                    }
+
+                    if ui.button("Apply Changes").clicked() {
+                        apply_changes = true;
+                    }
+                });
+        }
+
+        if apply_changes {
+            self.refresh_image_list();
+            self.load_image(ctx);
+        }
     }
 }
 
@@ -94,12 +215,19 @@ fn get_image_paths(folder: &Path) -> Vec<PathBuf> {
 }
 
 fn main() {
+    use rand::seq::SliceRandom;
+    use rand::thread_rng;
+
     let folder = FileDialog::new()
         .set_title("Select an image folder")
         .pick_folder()
         .expect("No folder selected");
 
-    let image_paths = get_image_paths(&folder);
+    let mut image_paths = get_image_paths(&folder);
+    image_paths.shuffle(&mut thread_rng());
+
+    let mut folder_map = HashMap::new();
+    folder_map.insert(folder.clone(), true);
 
     let native_options = eframe::NativeOptions {
         initial_window_size: Some(egui::Vec2::new(800.0, 600.0)),
@@ -108,7 +236,7 @@ fn main() {
     };
 
     eframe::run_native(
-        "Rust Image Viewer",
+        "Germi Board",
         native_options,
         Box::new(move |_cc| {
             Box::new(ImageViewerApp {
@@ -117,6 +245,12 @@ fn main() {
                 current_image: None,
                 texture: None,
                 last_size: None,
+                last_hover: Instant::now(),
+                decorations_visible: true,
+                folder_map,
+                show_folder_manager: false,
+                show_context_menu: false,
+                context_menu_pos: egui::pos2(100.0, 100.0),
             })
         }),
     );
