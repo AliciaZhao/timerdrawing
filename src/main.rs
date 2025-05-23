@@ -8,6 +8,16 @@ use std::{
     time::{Duration, Instant},
 };
 
+use windows::{
+    Win32::UI::WindowsAndMessaging::{
+        GetForegroundWindow, GetWindowTextW, GetWindowThreadProcessId,
+        WindowFromPoint, GetCursorPos,
+    },
+    Win32::System::Threading::{OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_VM_READ},
+    Win32::System::ProcessStatus::K32GetModuleBaseNameW,
+    Win32::Foundation::{HWND, POINT, CloseHandle},
+};
+
 struct ImageViewerApp {
     image_paths: Vec<PathBuf>,
     current_index: usize,
@@ -20,9 +30,33 @@ struct ImageViewerApp {
     show_folder_manager: bool,
     show_context_menu: bool,
     context_menu_pos: egui::Pos2,
+    target_exe_name: Option<String>,
+    target_is_active: bool,
+    target_is_hovered: bool,
 }
 
 impl ImageViewerApp {
+    fn get_exe_name_from_hwnd(hwnd: HWND) -> Option<String> {
+        unsafe {
+            let mut pid = 0;
+            GetWindowThreadProcessId(hwnd, Some(&mut pid));
+            let handle = match OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, false, pid) {
+                Ok(h) => h,
+                Err(_) => return None,
+            };
+
+            let mut buffer = [0u16; 260];
+            let len = K32GetModuleBaseNameW(handle, None, &mut buffer);
+            CloseHandle(handle);
+
+            if len == 0 {
+                return None;
+            }
+
+            Some(String::from_utf16_lossy(&buffer[..len as usize]).to_lowercase())
+        }
+    }
+
     fn load_image(&mut self, ctx: &egui::Context) {
         while let Some(path) = self.image_paths.get(self.current_index) {
             match image::open(path) {
@@ -87,12 +121,10 @@ impl App for ImageViewerApp {
             self.decorations_visible = false;
         }
 
-        // Keyboard shortcut for next image
         if ctx.input(|i| i.key_pressed(egui::Key::ArrowRight)) {
             self.next_image(ctx);
         }
 
-        // Right-click detection
         if ctx.input(|i| i.pointer.secondary_clicked()) {
             if let Some(pos) = ctx.input(|i| i.pointer.hover_pos()) {
                 self.context_menu_pos = pos;
@@ -100,14 +132,25 @@ impl App for ImageViewerApp {
             }
         }
 
-        // Right-click context menu
+        if let Some(target_name) = &self.target_exe_name {
+            let active_hwnd = unsafe { GetForegroundWindow() };
+            self.target_is_active = Self::get_exe_name_from_hwnd(active_hwnd)
+                .map_or(false, |name| name == *target_name);
+
+            let mut pt = POINT::default();
+            unsafe { GetCursorPos(&mut pt) };
+            let hovered_hwnd = unsafe { WindowFromPoint(pt) };
+            self.target_is_hovered = Self::get_exe_name_from_hwnd(hovered_hwnd)
+                .map_or(false, |name| name == *target_name);
+        }
+
         if self.show_context_menu {
             egui::Area::new("right_click_menu")
                 .fixed_pos(self.context_menu_pos)
                 .show(ctx, |ui| {
                     egui::Frame::popup(ui.style()).show(ui, |ui| {
                         if ui.button("Next Image").clicked() {
-                                        self.next_image(ctx);
+                            self.next_image(ctx);
                         }
 
                         if ui.button("Folder Manager").clicked() {
@@ -123,6 +166,15 @@ impl App for ImageViewerApp {
                             }
                         }
 
+                        if ui.button("Track EXE...").clicked() {
+                            self.show_context_menu = false;
+                            if let Some(path) = FileDialog::new().add_filter("EXE", &["exe"]).pick_file() {
+                                if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
+                                    self.target_exe_name = Some(name.to_lowercase());
+                                }
+                            }
+                        }
+
                         if ui.button("Close Menu").clicked() {
                             self.show_context_menu = false;
                         }
@@ -130,8 +182,10 @@ impl App for ImageViewerApp {
                 });
         }
 
-        // Main panel
         egui::CentralPanel::default().show(ctx, |ui| {
+            if let Some(name) = &self.target_exe_name {
+                ui.label(format!("Tracking {} | Active: {} | Hovered: {}", name, self.target_is_active, self.target_is_hovered));
+            }
 
             if self.current_image.is_none() && self.image_paths.is_empty() {
                 ui.label("No image to display. Right-click to add folders.");
@@ -170,7 +224,6 @@ impl App for ImageViewerApp {
             }
         });
 
-        // Folder Manager Popup
         let mut apply_changes = false;
 
         if self.show_folder_manager {
@@ -251,6 +304,9 @@ fn main() {
                 show_folder_manager: false,
                 show_context_menu: false,
                 context_menu_pos: egui::pos2(100.0, 100.0),
+                target_exe_name: None,
+                target_is_active: false,
+                target_is_hovered: false,
             })
         }),
     );
