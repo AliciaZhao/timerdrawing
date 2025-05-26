@@ -1,6 +1,8 @@
 # GermiBoard
 
-GermiBoard is a lightweight image viewer for Windows designed for speed, simplicity, and minimal distractions.
+Can't decide what to draw? Here we have a program that will help you decide! Using any folder which stores your references and art inspirations, GermiBoard will choose one for you!
+GermiBoard will be able to stay on top while you draw away and even have a timer when you are active only in a certain program (So you can alt+tab and go do other business and the timer will pause for you).
+This program is made using Rust and will be able to run even on your home microwave! Enjoy!
 
 ## Features
 
