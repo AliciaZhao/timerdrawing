@@ -13,3 +13,4 @@
 .idea/
 /doc/
 Cargo.lock
+viewer_config.json

@@ -1,7 +1,10 @@
 {
   "folder_map": {
+    "C:\\Users\\Owner\\Pictures\\Ryujinx": true,
+    "D:\\downloads": true,
     "D:\\atr": true
   },
-  "target_exe_name": null,
-  "current_index": 9
+  "target_exe_name": "clipstudiopaint.exe",
+  "current_index": 249,
+  "is_pinned": true
 }

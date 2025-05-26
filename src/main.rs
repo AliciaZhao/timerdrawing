@@ -19,15 +19,18 @@ use windows::{
 };
 
 use serde::{Deserialize, Serialize};
+use rand::seq::SliceRandom;
 
 #[derive(Serialize, Deserialize, Default)]
 struct ConfigData {
     folder_map: HashMap<PathBuf, bool>,
     target_exe_name: Option<String>,
     current_index: usize,
+    is_pinned: bool,
 }
 
 struct ImageViewerApp {
+    image_timer: Instant,
     image_paths: Vec<PathBuf>,
     current_index: usize,
     current_image: Option<DynamicImage>,
@@ -42,6 +45,10 @@ struct ImageViewerApp {
     target_exe_name: Option<String>,
     target_is_active: bool,
     target_is_hovered: bool,
+    elapsed_time: Duration,
+    last_timer_check: Instant,
+    is_pinned: bool,
+    pin_state_changed: bool,
 }
 
 impl ImageViewerApp {
@@ -71,6 +78,7 @@ impl ImageViewerApp {
             folder_map: self.folder_map.clone(),
             target_exe_name: self.target_exe_name.clone(),
             current_index: self.current_index,
+            is_pinned: self.is_pinned,
         };
 
         if let Ok(json) = serde_json::to_string_pretty(&config) {
@@ -87,6 +95,7 @@ impl ImageViewerApp {
                     let color_image = egui::ColorImage::from_rgba_unmultiplied(size, rgba.as_raw());
                     self.texture = Some(ctx.load_texture("image", color_image, Default::default()));
                     self.current_image = Some(img);
+                    self.image_timer = Instant::now();
                     self.last_size = None;
                     break;
                 }
@@ -106,41 +115,83 @@ impl ImageViewerApp {
         if !self.image_paths.is_empty() {
             self.current_index = (self.current_index + 1) % self.image_paths.len();
             self.load_image(ctx);
+            self.elapsed_time = Duration::ZERO;
+            self.image_timer = Instant::now();
+            self.last_timer_check = Instant::now();
             self.save_config();
         }
     }
 
     fn refresh_image_list(&mut self) {
+        let mut collected_paths = Vec::new();
         let mut seen = HashSet::new();
-        self.image_paths.clear();
 
         for (folder, enabled) in &self.folder_map {
             if *enabled {
                 for path in get_image_paths(folder) {
                     if seen.insert(path.clone()) {
-                        self.image_paths.push(path);
+                        collected_paths.push(path);
                     }
                 }
             }
         }
-
-        self.current_index = 0;
-        self.save_config();
+        collected_paths.shuffle(&mut rand::thread_rng()); 
+        self.image_paths = collected_paths;
     }
 }
 
 impl App for ImageViewerApp {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+
+        if self.pin_state_changed {
+            use egui::WindowLevel;
+            let level = if self.is_pinned {
+                WindowLevel::AlwaysOnTop
+            } else {
+                WindowLevel::Normal
+            };
+            ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(level));
+            self.pin_state_changed = false;
+        }
+
+
+        ctx.request_repaint_after(Duration::from_secs(1));
+         egui::Area::new("")
+        .fixed_pos(egui::pos2(10.0, 10.0))
+        .show(ctx, |ui| {
+            let now = Instant::now();
+
+            if self.target_is_active {
+                let delta = now.duration_since(self.last_timer_check);
+                self.elapsed_time += delta;
+            }
+
+            self.last_timer_check = now;
+
+            let minutes = self.elapsed_time.as_secs() / 60;
+            let seconds = self.elapsed_time.as_secs() % 60;
+            let timer_text = format!("{:02}:{:02}", minutes, seconds);
+
+            ui.label(
+                egui::RichText::new(timer_text)
+                    .color(egui::Color32::RED)
+                    .background_color(egui::Color32::from_rgb(30, 0, 0))
+                    .font(egui::FontId::monospace(28.0)),
+            );
+        });
+
+
+
         let pointer_over = ctx.input(|i| i.pointer.hover_pos().is_some());
 
         if pointer_over {
             self.last_hover = Instant::now();
             if !self.decorations_visible {
-                frame.set_decorations(true);
+                ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(true));
                 self.decorations_visible = true;
             }
         } else if self.decorations_visible && self.last_hover.elapsed() > Duration::from_secs(2) {
-            frame.set_decorations(false);
+            ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(false));
             self.decorations_visible = false;
         }
 
@@ -176,16 +227,27 @@ impl App for ImageViewerApp {
                             self.next_image(ctx);
                         }
 
+                        if ui.button(if self.is_pinned { "Unpin from Top" } else { "Pin to Top" }).clicked() {
+                            self.is_pinned = !self.is_pinned;
+                            self.pin_state_changed = true;
+                            self.save_config();
+                            self.show_context_menu = false;
+                        }
+
                         if ui.button("Folder Manager").clicked() {
                             self.show_folder_manager = true;
                             self.show_context_menu = false;
                         }
 
+                        use rand::seq::SliceRandom;
+
                         if ui.button("Add Folder").clicked() {
                             self.show_context_menu = false;
                             if let Some(new_folder) = FileDialog::new().set_title("Add Folder").pick_folder() {
                                 self.folder_map.insert(new_folder.clone(), true);
-                                self.image_paths.extend(get_image_paths(&new_folder));
+                                let mut new_images = get_image_paths(&new_folder);
+                                new_images.shuffle(&mut rand::thread_rng());
+                                self.image_paths.extend(new_images);
                                 self.save_config();
                             }
                         }
@@ -208,9 +270,6 @@ impl App for ImageViewerApp {
         }
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            if let Some(name) = &self.target_exe_name {
-                ui.label(format!("Tracking {} | Active: {} | Hovered: {}", name, self.target_is_active, self.target_is_hovered));
-            }
 
             if self.current_image.is_none() && self.image_paths.is_empty() {
                 ui.label("No image to display. Right-click to add folders.");
@@ -233,7 +292,7 @@ impl App for ImageViewerApp {
                 let target_size = egui::Vec2::new(target_width.max(300.0), target_height.max(200.0));
 
                 if self.last_size.map_or(true, |s| (s - target_size).length_sq() > 1.0) {
-                    frame.set_window_size(target_size + egui::vec2(16.0, 56.0));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(target_size + egui::vec2(16.0, 56.0)));
                     self.last_size = Some(target_size);
                 }
 
@@ -242,7 +301,7 @@ impl App for ImageViewerApp {
                         ui.available_size(),
                         egui::Layout::centered_and_justified(egui::Direction::TopDown),
                         |ui| {
-                            ui.image(texture.id(), target_size);
+                            ui.image((texture.id(), target_size));
                         },
                     );
                 }
@@ -299,12 +358,14 @@ fn main() {
     let mut folder_map = HashMap::new();
     let mut target_exe_name = None;
     let mut current_index = 0;
+    let mut is_pinned = false;
 
     if let Ok(data) = std::fs::read_to_string("viewer_config.json") {
         if let Ok(config) = serde_json::from_str::<ConfigData>(&data) {
             folder_map = config.folder_map;
             target_exe_name = config.target_exe_name;
             current_index = config.current_index;
+            is_pinned = config.is_pinned;
         }
     }
 
@@ -324,16 +385,20 @@ fn main() {
     image_paths.shuffle(&mut thread_rng());
 
     let native_options = eframe::NativeOptions {
-        initial_window_size: Some(egui::Vec2::new(800.0, 600.0)),
-        resizable: true,
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size(egui::vec2(800.0, 600.0))
+            .with_resizable(true),
         ..Default::default()
     };
+
 
     let _ = eframe::run_native(
         "Germi Board",
         native_options,
+        
         Box::new(move |_cc| {
             Box::new(ImageViewerApp {
+                image_timer: Instant::now(),
                 image_paths,
                 current_index,
                 current_image: None,
@@ -348,6 +413,10 @@ fn main() {
                 target_exe_name,
                 target_is_active: false,
                 target_is_hovered: false,
+                elapsed_time: Duration::ZERO,
+                last_timer_check: Instant::now(),
+                is_pinned,
+                pin_state_changed: true,
             })
         }),
     );
