@@ -27,6 +27,8 @@ struct ConfigData {
     target_exe_name: Option<String>,
     current_index: usize,
     is_pinned: bool,
+    alarm_seconds: Option<u64>,
+    alarm_sound_path: Option<PathBuf>,
 }
 
 struct ImageViewerApp {
@@ -49,6 +51,11 @@ struct ImageViewerApp {
     last_timer_check: Instant,
     is_pinned: bool,
     pin_state_changed: bool,
+    alarm_duration: Option<Duration>,
+    alarm_triggered: bool,
+    alarm_sound_path: Option<PathBuf>,
+    show_alarm_config: bool,
+    alarm_seconds: Option<u64>,
 }
 
 impl ImageViewerApp {
@@ -79,6 +86,8 @@ impl ImageViewerApp {
             target_exe_name: self.target_exe_name.clone(),
             current_index: self.current_index,
             is_pinned: self.is_pinned,
+            alarm_seconds: self.alarm_seconds,
+            alarm_sound_path: self.alarm_sound_path.clone(),
         };
 
         if let Ok(json) = serde_json::to_string_pretty(&config) {
@@ -118,6 +127,7 @@ impl ImageViewerApp {
             self.elapsed_time = Duration::ZERO;
             self.image_timer = Instant::now();
             self.last_timer_check = Instant::now();
+            self.alarm_triggered = false;
             self.save_config();
         }
     }
@@ -218,6 +228,19 @@ impl App for ImageViewerApp {
                 .map_or(false, |name| name == *target_name);
         }
 
+        //timer logic
+        if let Some(alarm) = self.alarm_duration {
+            if !self.alarm_triggered && self.elapsed_time >= alarm {
+                self.alarm_triggered = true;
+                println!("Alarm triggered at {:?}", self.elapsed_time); // Debug log
+                if let Some(path) = &self.alarm_sound_path {
+                    println!("Attempting to play: {:?}", path); // Debug log
+                    play_alarm_sound(path.clone()); 
+                }
+            }
+        }
+
+
         if self.show_context_menu {
             egui::Area::new("right_click_menu")
                 .fixed_pos(self.context_menu_pos)
@@ -240,6 +263,7 @@ impl App for ImageViewerApp {
                         }
 
                         use rand::seq::SliceRandom;
+                        
 
                         if ui.button("Add Folder").clicked() {
                             self.show_context_menu = false;
@@ -250,6 +274,12 @@ impl App for ImageViewerApp {
                                 self.image_paths.extend(new_images);
                                 self.save_config();
                             }
+                        }
+
+                        if ui.button("Set Alarm...").clicked() {
+                            self.show_alarm_config = true;
+                            self.show_context_menu = false;
+                            self.save_config();
                         }
 
                         if ui.button("Track EXE...").clicked() {
@@ -268,6 +298,34 @@ impl App for ImageViewerApp {
                     });
                 });
         }
+
+        if self.show_alarm_config {
+            egui::Window::new("Set Alarm").show(ctx, |ui| {
+                if self.alarm_seconds.is_none() {
+                    self.alarm_seconds = Some(180);
+                }
+
+                ui.add(
+                    egui::Slider::new(self.alarm_seconds.as_mut().unwrap(), 10..=3600)
+                        .text("Trigger Alarm After (sec)")
+                );
+
+                if ui.button("Choose Sound").clicked() {
+                    if let Some(path) = FileDialog::new().add_filter("Audio", &["mp3", "wav", "ogg", "mp4"]).pick_file() {
+                        self.alarm_sound_path = Some(path);
+                    }
+                }
+
+                if ui.button("Set Alarm").clicked() {
+                    let seconds = self.alarm_seconds.unwrap_or(180);
+                    self.alarm_duration = Some(Duration::from_secs(seconds));
+                    self.alarm_triggered = false;
+                    self.show_alarm_config = false;
+                    self.save_config();
+                }
+            });
+        }
+
 
         egui::CentralPanel::default().show(ctx, |ui| {
 
@@ -351,6 +409,29 @@ fn get_image_paths(folder: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
+fn play_alarm_sound(path: PathBuf) {
+    use std::io::BufReader;
+    use rodio::{Decoder, OutputStream, Sink};
+
+    println!("Trying to play {:?}", path);
+
+    if let Ok((_stream, stream_handle)) = OutputStream::try_default() {
+        if let Ok(file) = std::fs::File::open(&path) {
+            if let Ok(source) = Decoder::new(BufReader::new(file)) {
+                let sink = Sink::try_new(&stream_handle).unwrap();
+                sink.append(source);
+                sink.sleep_until_end(); // for testing
+            } else {
+                println!("Failed to decode audio");
+            }
+        } else {
+            println!("Failed to open file: {:?}", path);
+        }
+    } else {
+        println!("No audio output stream found");
+    }
+}
+
 fn main() {
     use rand::seq::SliceRandom;
     use rand::thread_rng;
@@ -359,6 +440,9 @@ fn main() {
     let mut target_exe_name = None;
     let mut current_index = 0;
     let mut is_pinned = false;
+    let mut alarm_seconds = None;
+    let mut alarm_duration = None;
+    let mut alarm_sound_path = None;
 
     if let Ok(data) = std::fs::read_to_string("viewer_config.json") {
         if let Ok(config) = serde_json::from_str::<ConfigData>(&data) {
@@ -366,6 +450,9 @@ fn main() {
             target_exe_name = config.target_exe_name;
             current_index = config.current_index;
             is_pinned = config.is_pinned;
+            alarm_seconds = config.alarm_seconds;
+            alarm_sound_path = config.alarm_sound_path.clone();
+            alarm_duration = alarm_seconds.map(Duration::from_secs);
         }
     }
 
@@ -417,6 +504,11 @@ fn main() {
                 last_timer_check: Instant::now(),
                 is_pinned,
                 pin_state_changed: true,
+                alarm_seconds,
+                alarm_duration,
+                alarm_triggered: false,
+                alarm_sound_path,
+                show_alarm_config: false,
             })
         }),
     );
