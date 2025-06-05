@@ -1,11 +1,11 @@
 {
   "folder_map": {
     "D:\\downloads": true,
-    "D:\\atr": true,
-    "C:\\Users\\Owner\\Pictures\\Ryujinx": true
+    "C:\\Users\\Owner\\Pictures\\Ryujinx": true,
+    "D:\\atr": true
   },
   "target_exe_name": "clipstudiopaint.exe",
-  "current_index": 3,
+  "current_index": 10,
   "is_pinned": true,
   "alarm_seconds": 10,
   "alarm_sound_path": "C:\\Users\\Owner\\Desktop\\Monster Hunter Tri - NotificationMessage Received Sound Effect [Clean].mp3"
